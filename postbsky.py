@@ -19,10 +19,13 @@ def load_secrets():
     return secrets
 
 # Login bij Bluesky om een toegangstoken en DID te krijgen
-def login_to_bluesky(handle, password):
+def login_to_bluesky(handle, password, debug=False):
     login_url = "https://bsky.social/xrpc/com.atproto.server.createSession"
     payload = {"identifier": handle, "password": password}
     response = requests.post(login_url, json=payload)
+
+    if debug:
+        print(f"🔍 Debug: Login respons {response.status_code} - {response.text}")
 
     if response.status_code == 200:
         data = response.json()
@@ -32,12 +35,15 @@ def login_to_bluesky(handle, password):
         return None, None
 
 # Haal de DID op van een gebruiker (mention)
-def get_did_for_handle(handle):
+def get_did_for_handle(handle, debug=False):
     if "." not in handle:
         handle += ".bsky.social"
 
     lookup_url = f"https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle={handle}"
     response = requests.get(lookup_url)
+
+    if debug:
+        print(f"🔍 Debug: DID ophalen voor {handle} - Status: {response.status_code}")
 
     if response.status_code == 200:
         return response.json().get("did")
@@ -45,38 +51,12 @@ def get_did_for_handle(handle):
         print(f"⚠️ Waarschuwing: Kon DID niet ophalen voor {handle}. API status: {response.status_code}")
         return None
 
-# Upload een afbeelding naar Bluesky en retourneer de 'blob'
-def upload_image_to_bluesky(access_token, image_path):
-    if not os.path.isfile(image_path):
-        print(f"❌ Fout: Bestand '{image_path}' bestaat niet.")
-        return None
-
-    mime_type, _ = mimetypes.guess_type(image_path)
-    if not mime_type or not mime_type.startswith("image/"):
-        print(f"❌ Fout: Ongeldig afbeeldingsbestand '{image_path}'. Alleen image/* MIME-types worden geaccepteerd.")
-        return None
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": mime_type
-    }
-
-    upload_url = "https://bsky.social/xrpc/com.atproto.repo.uploadBlob"
-
-    with open(image_path, "rb") as image_file:
-        files = {"file": (os.path.basename(image_path), image_file, mime_type)}
-        upload_response = requests.post(upload_url, headers=headers, files=files)
-
-        if upload_response.status_code == 200:
-            return upload_response.json().get("blob")
-        else:
-            print(f"❌ Fout bij uploaden van afbeelding: {upload_response.status_code}, {upload_response.text}")
-            return None
-
 # Hashtags en mentions parseren voor Bluesky
-def parse_hashtags_and_mentions(text):
+def parse_hashtags_and_mentions(text, debug=False):
     facets = []
-    matches = []
+
+    if not text:
+        return None
 
     for match in re.finditer(r"(@[\w.-]+|#[\w]+)", text):
         match_text = match.group(0)
@@ -84,16 +64,25 @@ def parse_hashtags_and_mentions(text):
 
         if match_text.startswith("#"):
             facet_type = "app.bsky.richtext.facet#tag"
-            facet_data = {"$type": facet_type, "tag": match_text[1:]}
+            facet_data = {"$type": facet_type, "tag": match_text[1:]}  
+            if debug:
+                print(f"🔍 Debug: Herkende hashtag {match_text}")
+        
         elif match_text.startswith("@"):
             facet_type = "app.bsky.richtext.facet#mention"
-            did = get_did_for_handle(match_text[1:])
+            did = get_did_for_handle(match_text[1:], debug)  
+            
             if did:
                 facet_data = {"$type": facet_type, "did": did}
+                if debug:
+                    print(f"🔍 Debug: Mention {match_text} gekoppeld aan DID {did}")
             else:
-                continue
+                if debug:
+                    print(f"⚠️ Debug: Kon DID niet ophalen voor mention {match_text}, wordt overgeslagen.")
+                continue  
+
         else:
-            continue
+            continue  
 
         facets.append({
             "index": {"byteStart": start, "byteEnd": end},
@@ -102,8 +91,8 @@ def parse_hashtags_and_mentions(text):
 
     return facets if facets else None
 
-# Post een bericht en/of afbeelding naar Bluesky
-def post_to_bluesky(access_token, did, message=None, image_path=None):
+# Post een bericht naar Bluesky
+def post_to_bluesky(access_token, did, message=None, debug=False):
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
@@ -122,46 +111,34 @@ def post_to_bluesky(access_token, did, message=None, image_path=None):
         }
     }
 
-    facets = parse_hashtags_and_mentions(message) if message else None
+    facets = parse_hashtags_and_mentions(message, debug)
     if facets:
         data["record"]["facets"] = facets
 
-    if image_path:
-        blob = upload_image_to_bluesky(access_token, image_path)
-        if blob:
-            data["record"]["embed"] = {
-                "$type": "app.bsky.embed.images",
-                "images": [
-                    {
-                        "image": blob,
-                        "alt": "Afbeelding geplaatst via script"
-                    }
-                ]
-            }
+    if debug:
+        print(f"📸 Debug: Volledige API-payload: {data}")
 
     response = requests.post(api_post_url, headers=headers, json=data)
+
+    if debug:
+        print(f"🔍 Debug: Post respons {response.status_code} - {response.text}")
+
     if response.status_code == 200:
         print("✅ Bericht succesvol geplaatst op Bluesky!")
     else:
         print(f"❌ Fout bij plaatsen van bericht: {response.status_code}, {response.text}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Plaats een bericht en/of afbeelding op Bluesky.")
+    parser = argparse.ArgumentParser(description="Plaats een bericht op Bluesky.")
     parser.add_argument("-m", "--message", type=str, help="Tekstbericht dat geplaatst moet worden.")
-    parser.add_argument("-i", "--image", type=str, help="Pad naar afbeelding die geplaatst moet worden.")
-    parser.add_argument("--handle", type=str, help="Bluesky gebruikersnaam (handle).")
-    parser.add_argument("--password", type=str, help="Bluesky wachtwoord.")
+    parser.add_argument("-d", "--debug", action="store_true", help="Schakel debug-modus in.")
 
     args = parser.parse_args()
 
     secrets = load_secrets()
-    handle = args.handle if args.handle else secrets.get("handle")
-    password = args.password if args.password else secrets.get("password")
+    handle = secrets.get("handle")
+    password = secrets.get("password")
 
-    if not handle or not password:
-        print("❌ Fout: Handle en wachtwoord zijn vereist. Voeg ze toe via de command line of in secrets.py.")
-        exit(1)
-
-    access_token, did = login_to_bluesky(handle=handle, password=password)
+    access_token, did = login_to_bluesky(handle, password, args.debug)
     if access_token and did:
-        post_to_bluesky(access_token=access_token, did=did, message=args.message, image_path=args.image)
+        post_to_bluesky(access_token, did, message=args.message, debug=args.debug)
