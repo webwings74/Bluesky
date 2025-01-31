@@ -2,6 +2,7 @@ import requests
 import argparse
 import os
 import importlib.util
+import re
 from datetime import datetime, timezone
 
 # Probeer secrets.py te laden als het bestaat
@@ -24,10 +25,55 @@ def login_to_bluesky(handle, password):
 
     if response.status_code == 200:
         data = response.json()
-        return data.get("accessJwt"), data.get("did")  # DID wordt ook opgehaald!
+        return data.get("accessJwt"), data.get("did")
     else:
         print(f"❌ Fout bij inloggen: {response.status_code}, {response.text}")
         return None, None
+
+# Haal de DID op van een gebruiker (mention)
+def get_did_for_handle(handle):
+    # Voeg ".bsky.social" toe als het er niet is
+    if "." not in handle:
+        handle += ".bsky.social"
+
+    lookup_url = f"https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle={handle}"
+    response = requests.get(lookup_url)
+
+    if response.status_code == 200:
+        return response.json().get("did")
+    else:
+        print(f"⚠️ Waarschuwing: Kon DID niet ophalen voor {handle}. API status: {response.status_code}")
+        return None
+
+# Hashtags en mentions parseren voor Bluesky
+def parse_hashtags_and_mentions(text):
+    facets = []
+    matches = []
+
+    # Zoek hashtags en mentions
+    for match in re.finditer(r"(@[\w.-]+|#[\w]+)", text):
+        match_text = match.group(0)
+        start, end = match.span()
+
+        if match_text.startswith("#"):
+            facet_type = "app.bsky.richtext.facet#tag"
+            facet_data = {"$type": facet_type, "tag": match_text[1:]}  # Hashtags zonder '#'
+        elif match_text.startswith("@"):
+            facet_type = "app.bsky.richtext.facet#mention"
+            did = get_did_for_handle(match_text[1:])  # Haal DID op van de gebruiker
+            if did:
+                facet_data = {"$type": facet_type, "did": did}
+            else:
+                continue  # Sla over als we geen DID kunnen ophalen
+        else:
+            continue
+
+        facets.append({
+            "index": {"byteStart": start, "byteEnd": end},
+            "features": [facet_data]
+        })
+
+    return facets if facets else None
 
 # Post een bericht en/of afbeelding naar Bluesky
 def post_to_bluesky(access_token, did, message=None, image_path=None):
@@ -38,18 +84,23 @@ def post_to_bluesky(access_token, did, message=None, image_path=None):
     
     api_post_url = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
 
-    # ✅ Gebruik de nieuwe methode om de juiste UTC-tijd te krijgen
+    # ✅ Gebruik de juiste UTC-tijd
     current_time = datetime.now(timezone.utc).isoformat()
 
     # Maak de JSON-payload voor het bericht
     data = {
-        "repo": did,  # ✅ De missing "repo" parameter wordt toegevoegd
+        "repo": did,
         "collection": "app.bsky.feed.post",
         "record": {
             "text": message or "",
             "createdAt": current_time
         }
     }
+
+    # ✅ Voeg hashtags en mentions toe als 'facets'
+    facets = parse_hashtags_and_mentions(message) if message else None
+    if facets:
+        data["record"]["facets"] = facets
 
     # Upload afbeelding als deze opgegeven is
     if image_path:
