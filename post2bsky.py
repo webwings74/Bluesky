@@ -4,6 +4,7 @@ import os
 import importlib.util
 import re
 import mimetypes
+import sys
 from datetime import datetime, timezone
 from PIL import Image
 
@@ -13,6 +14,7 @@ blueskyconfig = "config-webwings.py"
 # Maximale afbeeldingsgrootte (aanpasbaar)
 MAX_WIDTH = 2048
 MAX_HEIGHT = 2048
+MAX_IMAGES = 4  # Bluesky ondersteunt maximaal 4 afbeeldingen per post
 
 # Probeer de credentials te laden als het bestaat
 def load_secrets():
@@ -76,49 +78,45 @@ def resize_image(image_path, debug=False):
                 print(f"✅ Afbeelding is al binnen limiet: {width}x{height}, resizing niet nodig.")
             return image_path  # Gebruik originele afbeelding als deze al klein genoeg is
 
-# Upload een afbeelding naar Bluesky als een binaire upload
-def upload_image_to_bluesky(access_token, image_path, debug=False):
-    if not os.path.isfile(image_path):
-        print(f"❌ Fout: Bestand '{image_path}' bestaat niet.")
-        return None
+# Upload meerdere afbeeldingen naar Bluesky
+def upload_images_to_bluesky(access_token, image_paths, debug=False):
+    blobs = []
+    for index, image_path in enumerate(image_paths[:MAX_IMAGES]):  # Max 4 afbeeldingen
+        if not os.path.isfile(image_path):
+            print(f"❌ Fout: Bestand '{image_path}' bestaat niet.")
+            continue
 
-    # Resize afbeelding als nodig
-    image_path = resize_image(image_path, debug)
+        image_path = resize_image(image_path, debug)
 
-    mime_type, _ = mimetypes.guess_type(image_path)
-    if not mime_type or not mime_type.startswith("image/"):
-        print(f"❌ Ongeldig afbeeldingsbestand '{image_path}'. MIME-type: {mime_type or 'None'}. Probeer een .jpg of .png bestand.")
-        return None
+        mime_type, _ = mimetypes.guess_type(image_path)
+        if not mime_type or not mime_type.startswith("image/"):
+            print(f"❌ Ongeldig afbeeldingsbestand '{image_path}'. MIME-type: {mime_type or 'None'}. Probeer een .jpg of .png bestand.")
+            continue
 
-    file_size = os.path.getsize(image_path)
-    if debug:
-        print(f"📂 Uploading afbeelding: {image_path} (MIME: {mime_type}, Grootte: {file_size} bytes)")
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": mime_type
+        }
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": mime_type
-    }
+        upload_url = "https://bsky.social/xrpc/com.atproto.repo.uploadBlob"
 
-    upload_url = "https://bsky.social/xrpc/com.atproto.repo.uploadBlob"
+        with open(image_path, "rb") as image_file:
+            image_data = image_file.read()
+            upload_response = requests.post(upload_url, headers=headers, data=image_data)
 
-    with open(image_path, "rb") as image_file:
-        image_data = image_file.read()
-        upload_response = requests.post(upload_url, headers=headers, data=image_data)
-
-        if debug:
-            print(f"🔍 Debug: Upload respons {upload_response.status_code} - {upload_response.text}")
-
-        if upload_response.status_code == 200:
-            blob_data = upload_response.json()
             if debug:
-                print(f"📸 Geüploade afbeelding respons: {blob_data}")
-            return blob_data
-        else:
-            print(f"❌ Fout bij uploaden van afbeelding: {upload_response.status_code}, {upload_response.text}")
-            return None
+                print(f"🔍 Debug: Upload respons {upload_response.status_code} - {upload_response.text}")
+
+            if upload_response.status_code == 200:
+                blob_data = upload_response.json()
+                blobs.append(blob_data)
+                if debug:
+                    print(f"📸 Geüploade afbeelding {index+1}: {blob_data}")
+
+    return blobs
 
 # Post een bericht naar Bluesky
-def post_to_bluesky(access_token, did, message=None, image_path=None, debug=False):
+def post_to_bluesky(access_token, did, message=None, image_paths=None, debug=False):
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
@@ -137,12 +135,9 @@ def post_to_bluesky(access_token, did, message=None, image_path=None, debug=Fals
         }
     }
 
-    if image_path:
-        blob = upload_image_to_bluesky(access_token, image_path, debug)
-        if blob:
-            if debug:
-                print(f"📸 Afbeelding succesvol geüpload! Blob: {blob}")
-
+    if image_paths:
+        blobs = upload_images_to_bluesky(access_token, image_paths, debug)
+        if blobs:
             data["record"]["embed"] = {
                 "$type": "app.bsky.embed.images",
                 "images": [
@@ -153,15 +148,10 @@ def post_to_bluesky(access_token, did, message=None, image_path=None, debug=Fals
                             "mimeType": blob["blob"]["mimeType"], 
                             "size": blob["blob"]["size"]
                         },
-                        "alt": "Afbeelding geplaatst via script"
-                    }
+                        "alt": f"Afbeelding {idx+1} geplaatst via script"
+                    } for idx, blob in enumerate(blobs)
                 ]
             }
-        else:
-            print("❌ Afbeelding werd niet correct geüpload.")
-
-    if debug:
-        print(f"📸 Debug: Volledige API-payload: {data}")
 
     response = requests.post(api_post_url, headers=headers, json=data)
 
@@ -176,15 +166,24 @@ def post_to_bluesky(access_token, did, message=None, image_path=None, debug=Fals
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plaats een bericht op Bluesky.")
     parser.add_argument("-m", "--message", type=str, help="Tekstbericht dat geplaatst moet worden.")
-    parser.add_argument("-i", "--image", type=str, help="Pad naar afbeelding die geplaatst moet worden.")
+    parser.add_argument("-i", "--images", type=str, help="Pad naar afbeeldingen, gescheiden door komma.")
     parser.add_argument("-d", "--debug", action="store_true", help="Schakel debug-modus in.")
 
     args = parser.parse_args()
 
-    secrets = load_secrets()
-    handle = secrets.get("handle")
-    password = secrets.get("password")
+    if not sys.stdin.isatty():
+        piped_text = sys.stdin.read().strip()
+    else:
+        piped_text = None
 
-    access_token, did = login_to_bluesky(handle, password, args.debug)
-    if access_token and did:
-        post_to_bluesky(access_token, did, message=args.message, image_path=args.image, debug=args.debug)
+    message_text = args.message if args.message else piped_text
+
+    if not message_text:
+        print("❌ Fout: Er is geen bericht opgegeven. Gebruik -m of een pipe-invoer.")
+        sys.exit(1)
+
+    secrets = load_secrets()
+    access_token, did = login_to_bluesky(secrets.get("handle"), secrets.get("password"), args.debug)
+
+    image_paths = args.images.split(",") if args.images else []
+    post_to_bluesky(access_token, did, message=message_text, image_paths=image_paths, debug=args.debug)
