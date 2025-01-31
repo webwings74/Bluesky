@@ -115,6 +115,46 @@ def upload_images_to_bluesky(access_token, image_paths, debug=False):
 
     return blobs
 
+# Hashtags en mentions parseren voor Bluesky
+def parse_hashtags_and_mentions(text, debug=False):
+    facets = []
+
+    if not text:
+        return None
+
+    for match in re.finditer(r"(@[\w.-]+|#[\w]+)", text):
+        match_text = match.group(0)
+        start, end = match.span()
+
+        if match_text.startswith("#"):
+            facet_type = "app.bsky.richtext.facet#tag"
+            facet_data = {"$type": facet_type, "tag": match_text[1:]}  # Hashtag zonder '#'
+            if debug:
+                print(f"🔍 Debug: Herkende hashtag {match_text}")
+        
+        elif match_text.startswith("@"):
+            facet_type = "app.bsky.richtext.facet#mention"
+            did = get_did_for_handle(match_text[1:], debug)  # Haal DID op van de gebruiker
+            
+            if did:
+                facet_data = {"$type": facet_type, "did": did}
+                if debug:
+                    print(f"🔍 Debug: Mention {match_text} gekoppeld aan DID {did}")
+            else:
+                if debug:
+                    print(f"⚠️ Debug: Kon DID niet ophalen voor mention {match_text}, wordt overgeslagen.")
+                continue  # Sla over als we geen DID kunnen ophalen
+
+        else:
+            continue  # Sla over als het geen hashtag of mention is
+
+        facets.append({
+            "index": {"byteStart": start, "byteEnd": end},
+            "features": [facet_data]
+        })
+
+    return facets if facets else None
+
 # Post een bericht naar Bluesky
 def post_to_bluesky(access_token, did, message=None, image_paths=None, debug=False):
     headers = {
@@ -134,6 +174,10 @@ def post_to_bluesky(access_token, did, message=None, image_paths=None, debug=Fal
             "createdAt": current_time
         }
     }
+
+    facets = parse_hashtags_and_mentions(message, debug)
+    if facets:
+        data["record"]["facets"] = facets
 
     if image_paths:
         blobs = upload_images_to_bluesky(access_token, image_paths, debug)
