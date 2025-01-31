@@ -5,11 +5,19 @@ import importlib.util
 import re
 import mimetypes
 from datetime import datetime, timezone
+from PIL import Image
 
-# Probeer secrets.py te laden als het bestaat
+# Bestandsnaam voor de Bluesky Handle/password
+blueskyconfig = "config-webwings.py"
+
+# Maximale afbeeldingsgrootte (aanpasbaar)
+MAX_WIDTH = 2048
+MAX_HEIGHT = 2048
+
+# Probeer de credentials te laden als het bestaat
 def load_secrets():
     secrets = {}
-    secrets_path = "secrets.py"
+    secrets_path = blueskyconfig
     if os.path.exists(secrets_path):
         spec = importlib.util.spec_from_file_location("secrets", secrets_path)
         secrets_module = importlib.util.module_from_spec(spec)
@@ -51,48 +59,66 @@ def get_did_for_handle(handle, debug=False):
         print(f"⚠️ Waarschuwing: Kon DID niet ophalen voor {handle}. API status: {response.status_code}")
         return None
 
-# Hashtags en mentions parseren voor Bluesky
-def parse_hashtags_and_mentions(text, debug=False):
-    facets = []
+# 📸 Resize afbeelding als deze groter is dan MAX_WIDTH x MAX_HEIGHT
+def resize_image(image_path, debug=False):
+    with Image.open(image_path) as img:
+        width, height = img.size
 
-    if not text:
+        if width > MAX_WIDTH or height > MAX_HEIGHT:
+            img.thumbnail((MAX_WIDTH, MAX_HEIGHT))  # Behoudt aspect ratio
+            resized_path = f"{image_path}_resized.jpg"
+            img.save(resized_path, "JPEG", quality=85)  # Compressie toepassen
+            if debug:
+                print(f"📏 Afbeelding resized: {image_path} -> {resized_path} ({img.size[0]}x{img.size[1]})")
+            return resized_path
+        else:
+            if debug:
+                print(f"✅ Afbeelding is al binnen limiet: {width}x{height}, resizing niet nodig.")
+            return image_path  # Gebruik originele afbeelding als deze al klein genoeg is
+
+# Upload een afbeelding naar Bluesky als een binaire upload
+def upload_image_to_bluesky(access_token, image_path, debug=False):
+    if not os.path.isfile(image_path):
+        print(f"❌ Fout: Bestand '{image_path}' bestaat niet.")
         return None
 
-    for match in re.finditer(r"(@[\w.-]+|#[\w]+)", text):
-        match_text = match.group(0)
-        start, end = match.span()
+    # Resize afbeelding als nodig
+    image_path = resize_image(image_path, debug)
 
-        if match_text.startswith("#"):
-            facet_type = "app.bsky.richtext.facet#tag"
-            facet_data = {"$type": facet_type, "tag": match_text[1:]}  
+    mime_type, _ = mimetypes.guess_type(image_path)
+    if not mime_type or not mime_type.startswith("image/"):
+        print(f"❌ Ongeldig afbeeldingsbestand '{image_path}'. MIME-type: {mime_type or 'None'}. Probeer een .jpg of .png bestand.")
+        return None
+
+    file_size = os.path.getsize(image_path)
+    if debug:
+        print(f"📂 Uploading afbeelding: {image_path} (MIME: {mime_type}, Grootte: {file_size} bytes)")
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": mime_type
+    }
+
+    upload_url = "https://bsky.social/xrpc/com.atproto.repo.uploadBlob"
+
+    with open(image_path, "rb") as image_file:
+        image_data = image_file.read()
+        upload_response = requests.post(upload_url, headers=headers, data=image_data)
+
+        if debug:
+            print(f"🔍 Debug: Upload respons {upload_response.status_code} - {upload_response.text}")
+
+        if upload_response.status_code == 200:
+            blob_data = upload_response.json()
             if debug:
-                print(f"🔍 Debug: Herkende hashtag {match_text}")
-        
-        elif match_text.startswith("@"):
-            facet_type = "app.bsky.richtext.facet#mention"
-            did = get_did_for_handle(match_text[1:], debug)  
-            
-            if did:
-                facet_data = {"$type": facet_type, "did": did}
-                if debug:
-                    print(f"🔍 Debug: Mention {match_text} gekoppeld aan DID {did}")
-            else:
-                if debug:
-                    print(f"⚠️ Debug: Kon DID niet ophalen voor mention {match_text}, wordt overgeslagen.")
-                continue  
-
+                print(f"📸 Geüploade afbeelding respons: {blob_data}")
+            return blob_data
         else:
-            continue  
-
-        facets.append({
-            "index": {"byteStart": start, "byteEnd": end},
-            "features": [facet_data]
-        })
-
-    return facets if facets else None
+            print(f"❌ Fout bij uploaden van afbeelding: {upload_response.status_code}, {upload_response.text}")
+            return None
 
 # Post een bericht naar Bluesky
-def post_to_bluesky(access_token, did, message=None, debug=False):
+def post_to_bluesky(access_token, did, message=None, image_path=None, debug=False):
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
@@ -111,9 +137,28 @@ def post_to_bluesky(access_token, did, message=None, debug=False):
         }
     }
 
-    facets = parse_hashtags_and_mentions(message, debug)
-    if facets:
-        data["record"]["facets"] = facets
+    if image_path:
+        blob = upload_image_to_bluesky(access_token, image_path, debug)
+        if blob:
+            if debug:
+                print(f"📸 Afbeelding succesvol geüpload! Blob: {blob}")
+
+            data["record"]["embed"] = {
+                "$type": "app.bsky.embed.images",
+                "images": [
+                    {
+                        "image": {
+                            "$type": "blob",
+                            "ref": blob["blob"]["ref"], 
+                            "mimeType": blob["blob"]["mimeType"], 
+                            "size": blob["blob"]["size"]
+                        },
+                        "alt": "Afbeelding geplaatst via script"
+                    }
+                ]
+            }
+        else:
+            print("❌ Afbeelding werd niet correct geüpload.")
 
     if debug:
         print(f"📸 Debug: Volledige API-payload: {data}")
@@ -131,6 +176,7 @@ def post_to_bluesky(access_token, did, message=None, debug=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plaats een bericht op Bluesky.")
     parser.add_argument("-m", "--message", type=str, help="Tekstbericht dat geplaatst moet worden.")
+    parser.add_argument("-i", "--image", type=str, help="Pad naar afbeelding die geplaatst moet worden.")
     parser.add_argument("-d", "--debug", action="store_true", help="Schakel debug-modus in.")
 
     args = parser.parse_args()
@@ -141,4 +187,4 @@ if __name__ == "__main__":
 
     access_token, did = login_to_bluesky(handle, password, args.debug)
     if access_token and did:
-        post_to_bluesky(access_token, did, message=args.message, debug=args.debug)
+        post_to_bluesky(access_token, did, message=args.message, image_path=args.image, debug=args.debug)
