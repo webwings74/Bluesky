@@ -1,6 +1,6 @@
 secrets.py
 config-webwings.py
-/bluesky-env/
+*-env/
 /__pycache__/
 *.jpg
 *.jpeg
