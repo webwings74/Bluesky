@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from PIL import Image
 
 # Bestandsnaam voor de Bluesky Handle/password
-blueskyconfig = "config-webwings.py"
+blueskyconfig = "myconfig.py"
 
 # Maximale afbeeldingsgrootte (aanpasbaar)
 MAX_WIDTH = 2048
