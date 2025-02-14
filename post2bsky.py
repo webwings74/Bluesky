@@ -21,7 +21,7 @@ def load_secrets():
     secrets = {}
     secrets_path = blueskyconfig
     if os.path.exists(secrets_path):
-        spec = importlib.util.spec_from_file_location("secrets", secrets_path)
+        spec = importlib.util.spec_from_file_location("myconfig", secrets_path)
         secrets_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(secrets_module)
         secrets["handle"] = getattr(secrets_module, "BLUESKY_HANDLE", None)
