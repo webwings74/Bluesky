@@ -14,7 +14,13 @@ The program ```post2bsky.py``` is a **Python** program with comments explaining 
 * **Pillow** (PIL) for resizing images.
 
 ## Setup
-1. Install the required third-party packages: ```pip install requests Pillow```
+1. Create and activate a virtual environment, then install the dependencies from ```requirements.txt```:
+   ```bash
+   python3 -m venv bluesky-env
+   source bluesky-env/bin/activate
+   pip install -r requirements.txt
+   ```
+   The ```bluesky-env/``` folder is ignored by git (```*-env/``` in ```.gitignore```). Activate the environment again with ```source bluesky-env/bin/activate``` whenever you want to use the program.
 2. Copy the template config file: ```cp config.py myconfig.py```
 3. Edit ```myconfig.py``` and fill in your Bluesky handle and an app password (create one under *Settings → Privacy and security → App passwords* on Bluesky).
 
