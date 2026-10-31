@@ -6,3 +6,4 @@ config-webwings.py
 *.jpg
 *.jpeg
 *.png
+.DS_Store
